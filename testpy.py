@@ -9,7 +9,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="판토스 물류비 정산 시스템", layout="wide")
 
-st.title("📦 판토스 물류비 100% 완벽 정산 시스템")
+st.title("📦 판토스 마감 내역 정리")
 st.write("마감내역서(PDF) 안의 모든 세부 비용 항목을 실제로 읽어서 엑셀 양식에 맞춰 정리해 드립니다.")
 
 st.sidebar.header("📂 파일 업로드")
