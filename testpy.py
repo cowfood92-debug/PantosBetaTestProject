@@ -51,7 +51,7 @@ header {visibility: hidden;}
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 📈 2025년 9월 ~ 2026년 5월 과거 누적 데이터 내장 (엑셀 추출 완료!)
+# 📈 2025년 9월 ~ 2026년 5월 과거 누적 데이터 내장
 # ---------------------------------------------------------
 @st.cache_data
 def get_historical_data():
@@ -279,14 +279,20 @@ if uploaded_plan and uploaded_pantos:
             if d.get("유류할증료_USD", 0) > 0: notes.append(f"⛽ [{raw_order}]: 유류할증료 ${d.get('유류할증료_USD', 0):,.0f} 달러 발생")
             if abs(out[30] - d.get("총액", 0)) > 10: notes.append(f"❌ [{raw_order}]: 총액 불일치 (시스템: {out[30]:,.0f}원 vs PDF: {d.get('총액', 0):,.0f}원)")
 
-        total_ocean_usd = sum([r[13] for r in results])
-        total_ocean_krw = sum([r[13] * r[12] for r in results])
-        total_kg = sum([r[5] for r in results])
-        total_amount_krw = sum([r[30] for r in results])
+        # 🚀 [오류 수정] 엑셀 수식과 100% 동일하게 파이썬 화면 로직 조정
+        total_usd_all = sum([r[11] for r in results])       # 엑셀 L열 (청구된 외화 총액 USD)
+        total_krw_of_usd = sum([r[21] for r in results])    # 엑셀 V열 (청구된 외화 총액의 원화 환산)
+        total_kg = sum([r[5] for r in results])             # 엑셀 F열 (총 중량)
+        total_amount_krw = sum([r[30] for r in results])    # 엑셀 AE열 (총계 원화)
 
-        avg_exrate = round(total_ocean_krw / total_ocean_usd if total_ocean_usd else 0, 1) 
+        # 엑셀의 ROUND 함수(사사오입)와 100% 일치하도록 반올림 로직 수동 구현
+        avg_exrate_raw = total_krw_of_usd / total_usd_all if total_usd_all else 0
+        avg_exrate = int(avg_exrate_raw * 10 + 0.5) / 10.0 
+        
         total_tons = total_kg / 1000 if total_kg else 0
-        base_rate = round((total_amount_krw / avg_exrate) / total_tons, 2) if avg_exrate and total_tons else 0
+        base_rate_raw = (total_amount_krw / avg_exrate) / total_tons if avg_exrate and total_tons else 0
+        base_rate = int(base_rate_raw * 100 + 0.5) / 100.0
+        
         calculated_fca_rate = base_rate + 28
 
         total_cpt_krw, total_fca_krw = 0, 0
