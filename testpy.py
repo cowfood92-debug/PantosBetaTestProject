@@ -24,9 +24,9 @@ header {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
-# 💡 V37 업데이트: 대시보드 제거, 실무 전용!
+# 💡 V46 업데이트 마크
 st.markdown(
-    '<div class="main-title">📦 판토스 물류비용 자동 정산 시스템 <span style="font-size: 1.2rem; color: #10B981; vertical-align: middle;">[V37 실전 압축 에디션]</span></div>',
+    '<div class="main-title">📦 판토스 물류비용 자동 정산 시스템 <span style="font-size: 1.2rem; color: #10B981; vertical-align: middle;">[V46 11월 평택 인하 에디션]</span></div>',
     unsafe_allow_html=True)
 st.markdown(
     '<div class="sub-title">마감내역서(PDF)와 반입계획서(Excel) 매칭부터 <strong>분기 계약 단가 자동 검증(Audit)</strong>까지 10초 만에 완벽하게 끝내세요.</div>',
@@ -108,6 +108,7 @@ def parse_pantos_pdf_individual_batch(file_bytes_list):
                 if current_ref not in lots:
                     lots[current_ref] = {
                         "__EXRATE__": 0.0, "__QTY__": 0.0, "__TRUCK_RATE__": 0.0, "총액": 0.0,
+                        "__POL__": "", "__POD__": "", "__ON_BOARD__": "",
                         "해상운임_USD": 0.0, "샤시운임_USD": 0.0, "선적지서류_USD": 0.0, "유류할증료_USD": 0.0,
                         "프리풀_USD": 0.0, "선적지내륙운송_USD": 0.0, "스토리지_USD": 0.0, "기타_USD": 0.0,
                         "트러킹_KRW": 0.0, "부두사용료_KRW": 0.0, "세척비_KRW": 0.0, "터미널비_KRW": 0.0, "서류발급비_KRW": 0.0,
@@ -117,6 +118,14 @@ def parse_pantos_pdf_individual_batch(file_bytes_list):
                         order.append(current_ref)
 
                 d = lots[current_ref]
+
+                pol_m = re.search(r"POL\s+(.*?)\s+(?:INCOTERMS|POD|F\.DEST)", text)
+                pod_m = re.search(r"POD\s+(.*?)\s+(?:VESSEL/FLIGHT|VESSEL|F\.DEST|GWT)", text)
+                onboard_m = re.search(r"ON-BOARD\s+(\d{4}-\d{2}-\d{2})", text)
+                
+                if pol_m and not d["__POL__"]: d["__POL__"] = pol_m.group(1).upper()
+                if pod_m and not d["__POD__"]: d["__POD__"] = pod_m.group(1).upper()
+                if onboard_m and not d["__ON_BOARD__"]: d["__ON_BOARD__"] = onboard_m.group(1)
 
                 qty_match = re.search(r"40HC\s*[xX*]\s*(\d+)", text, re.IGNORECASE)
                 if qty_match:
@@ -224,6 +233,8 @@ def parse_pantos_pdf_individual_batch(file_bytes_list):
 
 buffer = io.BytesIO()
 is_processed = False
+total_orders = 0
+total_qty = 0
 
 if uploaded_plan and uploaded_pantos_list:
     with st.spinner("엑셀 및 여러 개의 개별 인보이스를 동시 분석하고 있습니다..."):
@@ -234,24 +245,26 @@ if uploaded_plan and uploaded_pantos_list:
             xls = pd.ExcelFile(uploaded_plan)
             plan_map = {}
             for sheet_name in xls.sheet_names:
-                if "반입계획서" not in sheet_name: continue
-                country = "CN" if "홍타" in sheet_name else "US/EU"
                 df_temp = pd.read_excel(xls, sheet_name=sheet_name, header=None)
-                header_row_idx = 0
+                header_row_idx = -1
                 for i, row in df_temp.iterrows():
                     if any(isinstance(val, str) and ("Lot" in val or "서류발송" in val) for val in row.values):
-                        header_row_idx = i;
-                        break
+                        header_row_idx = i; break
+                
+                if header_row_idx == -1: continue
+
+                country = "CN" if "홍타" in sheet_name else "US/EU"
                 df_plan = pd.read_excel(xls, sheet_name=sheet_name, header=header_row_idx)
                 cols = df_plan.columns.astype(str)
+                
                 col_map = {
                     "lot": next((c for c in cols if "Lot" in c or "오더" in c), None),
-                    "ship_date": next((c for c in cols if "선적일" in c), None),
-                    "arr_date": next((c for c in cols if "입항일" in c), None),
+                    "ship_date": next((c for c in cols if "선적일" in c or "ETD" in c.upper()), None),
+                    "arr_date": next((c for c in cols if "입항일" in c or "ETA" in c.upper()), None),
                     "roll": next((c for c in cols if "ROLL" in c.upper()), None),
                     "kg": next((c for c in cols if "KG" in c.upper() or "중 량" in c or "중량" in c), None),
                     "sqm": next((c for c in cols if "SQM" in c.upper() or "S Q" in c or "수량" in c), None),
-                    "amt": next((c for c in cols if "금 액" in c or "외화" in c), None),
+                    "amt": next((c for c in cols if "금 액" in c or "외화" in c or "금액" in c or "물품대" in c), None),
                     "month": next((c for c in cols if "발주월" in c), None),
                     "factory_date": next((c for c in cols if "배차" in c or "입고" in c), None),
                     "clearance": next((c for c in cols if "통관" in c), None),
@@ -259,20 +272,32 @@ if uploaded_plan and uploaded_pantos_list:
                 for idx, row in df_plan.iterrows():
                     if not col_map["lot"]: continue
                     raw = str(row.get(col_map["lot"], "")).strip()
-                    if raw in ("nan", "None", "") or "Lot" in raw: continue
+                    if raw in ("nan", "None", "") or "Lot" in raw or "총계" in raw or "합계" in raw: continue
                     norm = normalize_lot(raw)
                     plan_map[norm] = {"raw": raw, "row": row, "country": country, "col_map": col_map}
         except Exception as e:
             st.error(f"반입계획서 엑셀 리딩 오류: {e}")
             st.stop()
 
-        # 💡 [무적 업데이트] 오차를 절대 허용하지 않는 완벽한 리스트 등록
+        # 💡 [V46 업데이트] 평택 11월 인하 단가(388,100원) 프리패스 추가!
         MASTER_TRUCK_RATES = [
             699000, 780400, 785400,
             321000, 829900, 1060300, 587200,
             283700, 739700, 943900, 518700,
-            208500
+            208500, 394200, 388100
         ]
+        
+        # 💡 [V46 업데이트] 평택항 육송 단가 이름 매핑 추가
+        TRUCK_ROUTE_MAP = {
+            283700: "삼륭 안산공장-인천항(20')",
+            321000: "삼륭 안산공장-인천항(40')",
+            739700: "삼륭 안산공장-부산항(20')",
+            943900: "SR 천안공장-부산항(20')",
+            1060300: "SR 천안공장-부산항(40')",
+            518700: "SR 천안공장-인천항(20')",
+            587200: "SR 천안공장-인천항(40')",
+            388100: "평택항 육송 (11월 인하 단가)"
+        }
 
         results, notes = [], []
         for pdf_ref in pdf_order:
@@ -285,6 +310,19 @@ if uploaded_plan and uploaded_pantos_list:
                     if norm_pdf in p_norm or p_norm in norm_pdf:
                         matched_plan = p_data;
                         break
+
+            if matched_plan:
+                row, col_map, raw_order = matched_plan["row"], matched_plan["col_map"], matched_plan["raw"]
+                p_ship = row.get(col_map["ship_date"], "")
+                p_arr = row.get(col_map["arr_date"], "")
+                p_roll, p_kg, p_sqm, p_amt = to_num(row.get(col_map["roll"], 0)), to_num(row.get(col_map["kg"], 0)), to_num(row.get(col_map["sqm"], 0)), to_num(row.get(col_map["amt"], 0))
+                p_month = row.get(col_map["month"], "")
+                p_fac = row.get(col_map["factory_date"], "")
+                p_clear = row.get(col_map["clearance"], "")
+            else:
+                raw_order, p_ship, p_arr, p_month, p_fac, p_clear = pdf_ref, "", "", "", "", ""
+                p_roll, p_kg, p_sqm, p_amt = 0, 0, 0, 0
+                notes.append(f"⚠️ [{raw_order}]: 반입계획서 엑셀에서 찾을 수 없어 날짜/수량이 빈칸 처리되었습니다.")
 
             order_country = "US/EU"
             if "HT" in norm_pdf:
@@ -303,7 +341,8 @@ if uploaded_plan and uploaded_pantos_list:
             else:
                 ORDER_CPT_RATE = 35.00
                 CONTRACT_RATES = {
-                    "OCEAN FREIGHT": 150, "LSS": 400, "WHARFAGE": 9504, "CONTAINER CLEANING FEE": 50000,
+                    "OCEAN FREIGHT": [150, 200, 600, 950], 
+                    "LSS": 400, "WHARFAGE": 9504, "CONTAINER CLEANING FEE": 50000,
                     "TERMINAL HANDLING CHARGE": 210000, "DOCUMENT FEE": 50000
                 }
 
@@ -311,9 +350,13 @@ if uploaded_plan and uploaded_pantos_list:
                 original_name = d["__RAW_NAMES__"].get(lookup_name, lookup_name)
                 if lookup_name in CONTRACT_RATES:
                     expected_rate = CONTRACT_RATES[lookup_name]
-                    if rate and rate != expected_rate:
-                        d["__AUDIT_WARNINGS__"].append(
-                            f"🛑 [{original_name}] 단가 불일치! (계약단가: {expected_rate:,.0f} / 청구단가: {rate:,.0f})")
+                    if rate:
+                        if isinstance(expected_rate, list):
+                            if not any(abs(rate - valid_r) < 10 for valid_r in expected_rate):
+                                d["__AUDIT_WARNINGS__"].append(f"🛑 [{original_name}] 단가 불일치! (허용단가: {expected_rate} / 청구단가: {rate:,.0f})")
+                        else:
+                            if abs(rate - expected_rate) >= 10:
+                                d["__AUDIT_WARNINGS__"].append(f"🛑 [{original_name}] 단가 불일치! (계약단가: {expected_rate:,.0f} / 청구단가: {rate:,.0f})")
                 elif "TRUCKING" in lookup_name:
                     if rate:
                         is_valid_truck = any(abs(rate - safe_rate) < 10 for safe_rate in MASTER_TRUCK_RATES)
@@ -321,18 +364,6 @@ if uploaded_plan and uploaded_pantos_list:
                             d["__AUDIT_WARNINGS__"].append(f"🛑 [TRUCKING CHARGE] 규정 외 단가 청구! (청구단가: {rate:,.0f}원)")
 
             for w in d.get("__AUDIT_WARNINGS__", []): notes.append(f"[{pdf_ref}] {w}")
-
-            if matched_plan:
-                row, col_map, raw_order = matched_plan["row"], matched_plan["col_map"], matched_plan["raw"]
-                p_ship, p_arr = row.get(col_map["ship_date"], ""), row.get(col_map["arr_date"], "")
-                p_roll, p_kg, p_sqm, p_amt = to_num(row.get(col_map["roll"], 0)), to_num(
-                    row.get(col_map["kg"], 0)), to_num(row.get(col_map["sqm"], 0)), to_num(row.get(col_map["amt"], 0))
-                p_month, p_fac, p_clear = row.get(col_map["month"], ""), row.get(col_map["factory_date"], ""), row.get(
-                    col_map["clearance"], "")
-            else:
-                raw_order, p_ship, p_arr, p_month, p_fac, p_clear = pdf_ref, "", "", "", "", ""
-                p_roll, p_kg, p_sqm, p_amt = 0, 0, 0, 0
-                notes.append(f"⚠️ [{raw_order}]: 반입계획서 엑셀에서 찾을 수 없어 날짜/수량이 빈칸 처리되었습니다.")
 
             out = [None] * 43
             out[0], out[1] = len(results) + 1, raw_order
@@ -356,15 +387,27 @@ if uploaded_plan and uploaded_pantos_list:
 
             if any(abs(truck_rate - tr) < 10 for tr in [780400, 785400, 829900]):
                 safe_road, safe_rail = truck_rate - 580000, 0
-                notes.append(f"🚚 [{raw_order}]: 육송 배차건 (단가 {truck_rate:,.0f}원 / 안전운임제 {safe_road:,.0f}원 적용)")
+                route_name = "삼륭 안산공장-부산항(40')" if abs(truck_rate - 829900) < 10 else "육송 배차건"
+                notes.append(f"🚚 [{raw_order}]: {route_name} (단가 {truck_rate:,.0f}원 / 안전운임제 {safe_road:,.0f}원 적용)")
             elif abs(truck_rate - 699000) < 10:
                 safe_road, safe_rail = 0, 119000
-            elif is_master:
-                safe_road, safe_rail = 0, 0
-                base_trucking = truck_rate
-                notes.append(f"🚚 [{raw_order}]: 기타 노선 육송 (단가 {truck_rate:,.0f}원)")
             else:
-                safe_road, safe_rail = 0, 0
+                matched_route = None
+                for price, route in TRUCK_ROUTE_MAP.items():
+                    if abs(truck_rate - price) < 10:
+                        matched_route = route
+                        break
+                
+                if matched_route:
+                    safe_road, safe_rail = 0, 0
+                    base_trucking = truck_rate
+                    notes.append(f"🚚 [{raw_order}]: {matched_route} (단가 {truck_rate:,.0f}원)")
+                elif is_master:
+                    safe_road, safe_rail = 0, 0
+                    base_trucking = truck_rate
+                    notes.append(f"🚚 [{raw_order}]: 기타 예외 노선 육송 (단가 {truck_rate:,.0f}원)")
+                else:
+                    safe_road, safe_rail = 0, 0
 
             out[22], out[23], out[24] = safe_road, safe_rail, base_trucking
             out[25] = d.get("트러킹_KRW", 0)
@@ -386,6 +429,9 @@ if uploaded_plan and uploaded_pantos_list:
             else:
                 notes.append(f"✅ [{raw_order}]: 시스템 검증 완료 (100% 일치)")
 
+        total_orders = len(results)
+        total_qty = sum([r[32] for r in results])
+        
         total_usd_all = sum([r[11] for r in results])
         total_krw_of_usd = sum([r[21] for r in results])
         total_kg = sum([r[5] for r in results])
@@ -408,9 +454,6 @@ if uploaded_plan and uploaded_pantos_list:
             out[38] = out[37] - out[36]
             total_cpt_krw += out[36]
             total_fca_krw += out[37]
-
-        total_savings = total_cpt_krw - total_fca_krw
-        total_orders, total_qty = len(results), sum([r[32] for r in results])
 
         is_processed = True
 
